@@ -324,6 +324,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 }
 .type-fixed { background: rgba(45,212,191,0.15); color: var(--teal); }
 .type-credit { background: rgba(167,139,250,0.15); color: var(--purple); }
+.type-parcelada { background: rgba(251,191,36,0.15); color: var(--amber); }
 .type-income { background: rgba(74,222,128,0.15); color: var(--green); }
 .type-reserve { background: rgba(251,191,36,0.15); color: var(--amber); }
 .actions { display: flex; gap: 6px; }
@@ -763,26 +764,49 @@ select option { background: var(--bg3); }
       <div class="form-grid">
         <div class="form-group full">
           <label>Nome da conta</label>
-          <input type="text" id="contaNome" placeholder="Ex: Energia elétrica, Nubank...">
+          <input type="text" id="contaNome" placeholder="Ex: Energia elétrica, Nubank, Carnê Casas Bahia...">
         </div>
         <div class="form-group">
           <label>Tipo</label>
           <select id="contaTipo" onchange="onTipoChange()">
             <option value="fixa">Conta Fixa</option>
             <option value="cartao">Cartão de Crédito</option>
+            <option value="parcelada">Parcelada (boleto / carnê)</option>
           </select>
         </div>
         <div class="form-group">
           <label>Dia de vencimento</label>
           <input type="number" id="contaVenc" min="1" max="31" placeholder="Ex: 15">
         </div>
+
+        <!-- Conta fixa -->
         <div class="form-group" id="grupoValorFixo">
           <label>Valor habitual (R$)</label>
           <input type="number" id="contaValor" step="0.01" placeholder="Ex: 150.00">
         </div>
+
+        <!-- Cartão de crédito -->
         <div class="form-group full" id="grupoCartaoTipo" style="display:none">
           <label>Bandeira / Banco</label>
           <input type="text" id="contaBandeira" placeholder="Ex: Mastercard, Visa, Elo...">
+        </div>
+
+        <!-- Parcelada avulsa -->
+        <div class="form-group" id="grupoParceladaValor" style="display:none">
+          <label>Valor total da compra (R$)</label>
+          <input type="number" id="contaValorTotal" step="0.01" placeholder="Ex: 1200.00" oninput="calcularParcelaAvulsa()">
+        </div>
+        <div class="form-group" id="grupoParceladaNum" style="display:none">
+          <label>Número de parcelas</label>
+          <input type="number" id="contaNumParcelas" min="1" max="120" placeholder="Ex: 12" oninput="calcularParcelaAvulsa()">
+        </div>
+        <div class="form-group" id="grupoParceladaInicio" style="display:none">
+          <label>Mês da 1ª parcela</label>
+          <input type="month" id="contaMesInicio" oninput="calcularParcelaAvulsa()">
+        </div>
+        <div class="form-group" id="grupoParceladaCalc" style="display:none">
+          <label>Valor de cada parcela</label>
+          <input type="text" id="contaValorParcela" readonly style="background:var(--bg4);color:var(--text2)">
         </div>
       </div>
     </div>
@@ -1182,56 +1206,73 @@ function renderAll() {
 // DASHBOARD
 // =============================================
 function calcFinanceiro() {
+  const now = new Date();
+  const mes = now.getMonth() + 1, ano = now.getFullYear();
   const receita = dados.receitas.reduce((s, r) => s + r.valor, 0);
-  const fixo = dados.contas
-    .filter(c => c.tipo === 'fixa')
-    .reduce((s, c) => s + c.valor, 0);
-  const cartoes = getMesAtualCartoes();
-  const totalCartoes = cartoes.reduce((s, c) => s + c.valor, 0);
-  const totalFixo = fixo + totalCartoes;
+  const fixo = dados.contas.filter(c => c.tipo === 'fixa').reduce((s, c) => s + c.valor, 0);
+  const totalCartoes = getMesAtualCartoes(mes, ano).reduce((s, c) => s + c.valor, 0);
+  const totalParceladasAvulsas = getMesAtualParceladasAvulsas(mes, ano).reduce((s, c) => s + c.valor, 0);
+  const totalFixo = fixo + totalCartoes + totalParceladasAvulsas;
   const reservasVal = dados.reservas.reduce((s, r) => s + (receita * r.pct / 100), 0);
   const livre = receita - totalFixo - reservasVal;
   return { receita, fixo: totalFixo, reservasVal, livre };
 }
 
-function getMesAtualCartoes() {
-  const now = new Date();
-  const mes = now.getMonth() + 1;
-  const ano = now.getFullYear();
-  const results = [];
+// Retorna valor de cada cartão agrupado (soma de todas as compras do mês daquele cartão)
+function getMesAtualCartoes(mes, ano) {
+  if (!mes) { const now = new Date(); mes = now.getMonth()+1; ano = now.getFullYear(); }
+  // mapa cartaoId → valor total no mês
+  const mapa = {};
 
   for (const compra of dados.compras) {
     const cartao = dados.contas.find(c => c.id === compra.cartaoId);
     if (!cartao) continue;
-    const diaFechamento = cartao.venc - 10;
-    const dataCompra = new Date(compra.data);
+    let diaFechamento = cartao.venc - 10;
+    if (diaFechamento <= 0) diaFechamento += 30; // segurança p/ venc <= 10
+    const dataCompra = new Date(compra.data + 'T12:00:00');
+
+    const adicionarNoMes = (fM, fA, valor) => {
+      if (fM === mes && fA === ano) {
+        mapa[cartao.id] = mapa[cartao.id] || { id: cartao.id, nome: cartao.nome, venc: cartao.venc, valor: 0 };
+        mapa[cartao.id].valor += valor;
+      }
+    };
 
     if (compra.modalidade === 'rotativo') {
-      const fatMes = dataCompra.getDate() <= diaFechamento
-        ? dataCompra.getMonth() + 1
-        : dataCompra.getMonth() + 2;
-      const fatAno = dataCompra.getDate() <= diaFechamento
-        ? dataCompra.getFullYear()
-        : (dataCompra.getMonth() === 11 ? dataCompra.getFullYear() + 1 : dataCompra.getFullYear());
-      if (fatMes === mes && fatAno === ano) {
-        results.push({ cartaoId: compra.cartaoId, nome: cartao.nome + ' — ' + compra.desc, valor: compra.valor, venc: cartao.venc });
-      }
+      let fM = dataCompra.getDate() <= diaFechamento ? dataCompra.getMonth()+1 : dataCompra.getMonth()+2;
+      let fA = dataCompra.getFullYear();
+      if (fM > 12) { fM -= 12; fA++; }
+      adicionarNoMes(fM, fA, compra.valor);
     } else {
       const valParcela = +(compra.valor / compra.parcelas).toFixed(2);
+      let fM = dataCompra.getDate() <= diaFechamento ? dataCompra.getMonth()+1 : dataCompra.getMonth()+2;
+      let fA = dataCompra.getFullYear();
+      if (fM > 12) { fM -= 12; fA++; }
       for (let p = 0; p < compra.parcelas; p++) {
-        let fM = dataCompra.getDate() <= diaFechamento ? dataCompra.getMonth() + 1 : dataCompra.getMonth() + 2;
-        let fA = dataCompra.getFullYear();
-        if (dataCompra.getDate() > diaFechamento && dataCompra.getMonth() === 11) fA++;
-        fM += p;
-        while (fM > 12) { fM -= 12; fA++; }
-        if (fM === mes && fA === ano) {
-          results.push({
-            cartaoId: compra.cartaoId,
-            nome: cartao.nome + ' — ' + compra.desc + ` (${p+1}/${compra.parcelas})`,
-            valor: valParcela,
-            venc: cartao.venc
-          });
-        }
+        let m = fM + p, a = fA;
+        while (m > 12) { m -= 12; a++; }
+        adicionarNoMes(m, a, valParcela);
+      }
+    }
+  }
+  return Object.values(mapa).map(c => ({ ...c, valor: +c.valor.toFixed(2) }));
+}
+
+// Retorna valor de cada conta parcelada avulsa no mês
+function getMesAtualParceladasAvulsas(mes, ano) {
+  if (!mes) { const now = new Date(); mes = now.getMonth()+1; ano = now.getFullYear(); }
+  const results = [];
+  for (const c of dados.contas.filter(c => c.tipo === 'parcelada')) {
+    if (!c.mesInicio || !c.numParcelas || !c.valorTotal) continue;
+    const [anoInicio, mesInicio] = c.mesInicio.split('-').map(Number);
+    const valParcela = +(c.valorTotal / c.numParcelas).toFixed(2);
+    for (let p = 0; p < c.numParcelas; p++) {
+      let m = mesInicio + p, a = anoInicio;
+      while (m > 12) { m -= 12; a++; }
+      if (m === mes && a === ano) {
+        results.push({ id: c.id, nome: c.nome, valor: valParcela, venc: c.venc,
+          parcelaInfo: `${p+1}/${c.numParcelas}` });
+        break;
       }
     }
   }
@@ -1357,29 +1398,44 @@ function renderContas() {
   if (dados.contas.length === 0) {
     el.innerHTML = `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">Nenhuma conta cadastrada</div><div class="empty-state-sub">Clique em "Nova Conta" para começar</div></div>`;
   } else {
+    const badgeMap = {
+      fixa:      ['type-fixed',  'Fixa'],
+      cartao:    ['type-credit', 'Cartão'],
+      parcelada: ['type-parcelada', 'Parcelada']
+    };
     el.innerHTML = `<table>
-      <thead><tr><th>Nome</th><th>Tipo</th><th>Vencimento</th><th>Valor / Bandeira</th><th>Ações</th></tr></thead>
+      <thead><tr><th>Nome</th><th>Tipo</th><th>Vencimento</th><th>Valor / Info</th><th>Ações</th></tr></thead>
       <tbody>
-        ${dados.contas.map(c => `<tr>
-          <td><strong>${c.nome}</strong></td>
-          <td><span class="type-badge ${c.tipo === 'fixa' ? 'type-fixed' : 'type-credit'}">${c.tipo === 'fixa' ? 'Fixa' : 'Cartão'}</span></td>
-          <td>Dia ${c.venc}</td>
-          <td>${c.tipo === 'fixa' ? fmtMoney(c.valor) : c.bandeira}</td>
-          <td><div class="actions">
-            ${c.tipo === 'cartao' ? `<button class="btn btn-ghost btn-sm" onclick="openCompraModal(${c.id})">+ Compra</button>` : ''}
-            <button class="btn btn-ghost btn-sm" onclick="editConta(${c.id})">✎</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteConta(${c.id})">✕</button>
-          </div></td>
-        </tr>`).join('')}
+        ${dados.contas.map(c => {
+          const [cls, label] = badgeMap[c.tipo] || ['type-fixed','—'];
+          let info = '';
+          if (c.tipo === 'fixa') info = fmtMoney(c.valor);
+          else if (c.tipo === 'cartao') info = c.bandeira;
+          else if (c.tipo === 'parcelada') {
+            const valP = c.numParcelas ? +(c.valorTotal / c.numParcelas).toFixed(2) : 0;
+            info = `${fmtMoney(valP)}/mês · ${c.numParcelas}x · início ${c.mesInicio || '—'}`;
+          }
+          return `<tr>
+            <td><strong>${c.nome}</strong></td>
+            <td><span class="type-badge ${cls}">${label}</span></td>
+            <td>Dia ${c.venc}</td>
+            <td style="font-size:13px">${info}</td>
+            <td><div class="actions">
+              ${c.tipo === 'cartao' ? `<button class="btn btn-ghost btn-sm" onclick="openCompraModal(${c.id})">+ Compra</button>` : ''}
+              <button class="btn btn-ghost btn-sm" onclick="editConta(${c.id})">✎</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteConta(${c.id})">✕</button>
+            </div></td>
+          </tr>`;
+        }).join('')}
       </tbody>
     </table>`;
   }
 
-  // Parcelas ativas
+  // Compras parceladas de cartão
   const parcelasEl = document.getElementById('parcelasTable');
   const parceladas = dados.compras.filter(c => c.modalidade === 'parcelado');
   if (parceladas.length === 0) {
-    parcelasEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">Nenhuma compra parcelada ativa</div></div>`;
+    parcelasEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">Nenhuma compra parcelada de cartão ativa</div></div>`;
   } else {
     parcelasEl.innerHTML = `<table>
       <thead><tr><th>Descrição</th><th>Cartão</th><th>Data</th><th>Valor total</th><th>Parcelas</th><th>Parcela</th><th>Ações</th></tr></thead>
@@ -1428,24 +1484,72 @@ function editConta(id) { openContaModal(id); }
 
 function onTipoChange() {
   const tipo = document.getElementById('contaTipo').value;
-  document.getElementById('grupoValorFixo').style.display = tipo === 'fixa' ? 'flex' : 'none';
-  document.getElementById('grupoCartaoTipo').style.display = tipo === 'cartao' ? 'flex' : 'none';
+  document.getElementById('grupoValorFixo').style.display      = tipo === 'fixa'      ? 'flex' : 'none';
+  document.getElementById('grupoCartaoTipo').style.display     = tipo === 'cartao'    ? 'flex' : 'none';
+  document.getElementById('grupoParceladaValor').style.display = tipo === 'parcelada' ? 'flex' : 'none';
+  document.getElementById('grupoParceladaNum').style.display   = tipo === 'parcelada' ? 'flex' : 'none';
+  document.getElementById('grupoParceladaInicio').style.display= tipo === 'parcelada' ? 'flex' : 'none';
+  document.getElementById('grupoParceladaCalc').style.display  = tipo === 'parcelada' ? 'flex' : 'none';
 }
+
+function calcularParcelaAvulsa() {
+  const total = parseFloat(document.getElementById('contaValorTotal').value) || 0;
+  const num   = parseInt(document.getElementById('contaNumParcelas').value) || 0;
+  document.getElementById('contaValorParcela').value = (num > 0) ? fmtMoney(+(total / num).toFixed(2)) : '';
+}
+
+function openContaModal(id = null) {
+  editingContaId = id;
+  document.getElementById('modalContaTitulo').textContent = id ? 'Editar Conta' : 'Nova Conta';
+  if (id) {
+    const c = dados.contas.find(c => c.id === id);
+    document.getElementById('contaNome').value       = c.nome;
+    document.getElementById('contaTipo').value       = c.tipo;
+    document.getElementById('contaVenc').value       = c.venc;
+    document.getElementById('contaValor').value      = c.valor || '';
+    document.getElementById('contaBandeira').value   = c.bandeira || '';
+    document.getElementById('contaValorTotal').value = c.valorTotal || '';
+    document.getElementById('contaNumParcelas').value= c.numParcelas || '';
+    document.getElementById('contaMesInicio').value  = c.mesInicio || '';
+    calcularParcelaAvulsa();
+  } else {
+    document.getElementById('contaNome').value       = '';
+    document.getElementById('contaTipo').value       = 'fixa';
+    document.getElementById('contaVenc').value       = '';
+    document.getElementById('contaValor').value      = '';
+    document.getElementById('contaBandeira').value   = '';
+    document.getElementById('contaValorTotal').value = '';
+    document.getElementById('contaNumParcelas').value= '';
+    document.getElementById('contaMesInicio').value  = '';
+    document.getElementById('contaValorParcela').value = '';
+  }
+  onTipoChange();
+  openModal('modalConta');
+}
+
+function editConta(id) { openContaModal(id); }
 
 async function salvarConta() {
   const nome = document.getElementById('contaNome').value.trim();
   const tipo = document.getElementById('contaTipo').value;
   const venc = parseInt(document.getElementById('contaVenc').value);
-  const valor = parseFloat(document.getElementById('contaValor').value) || 0;
-  const bandeira = document.getElementById('contaBandeira').value.trim();
+  if (!nome || !venc) { alert('Preencha nome e dia de vencimento.'); return; }
 
-  if (!nome || !venc) { alert('Preencha todos os campos obrigatórios.'); return; }
+  const item = { nome, tipo, venc,
+    valor:       parseFloat(document.getElementById('contaValor').value) || 0,
+    bandeira:    document.getElementById('contaBandeira').value.trim(),
+    valorTotal:  parseFloat(document.getElementById('contaValorTotal').value) || 0,
+    numParcelas: parseInt(document.getElementById('contaNumParcelas').value) || 0,
+    mesInicio:   document.getElementById('contaMesInicio').value || ''
+  };
 
-  const item = { nome, tipo, venc, valor, bandeira };
+  if (tipo === 'parcelada' && (!item.valorTotal || !item.numParcelas || !item.mesInicio)) {
+    alert('Para conta parcelada preencha valor total, número de parcelas e mês de início.'); return;
+  }
+
   if (editingContaId) {
     item.id = editingContaId;
-    const idx = dados.contas.findIndex(c => c.id === editingContaId);
-    dados.contas[idx] = { ...item };
+    dados.contas[dados.contas.findIndex(c => c.id === editingContaId)] = { ...item };
   } else {
     item.id = Date.now();
     dados.contas.push({ ...item });
@@ -1670,15 +1774,24 @@ function deleteReserva(id) {
 // =============================================
 function getItensMes(mes, ano) {
   const itens = [];
-  // Contas fixas
+
+  // 1. Contas fixas — uma linha por conta
   for (const c of dados.contas.filter(c => c.tipo === 'fixa')) {
     itens.push({ id: 'fixa_' + c.id, nome: c.nome, valor: c.valor, venc: c.venc, tipo: 'fixa' });
   }
-  // Cartões
-  const cartoes = getMesAtualCartoes();
-  for (const c of cartoes) {
-    itens.push({ id: 'cartao_' + c.cartaoId + '_' + Math.random().toString(36).slice(2,6), nome: c.nome, valor: c.valor, venc: c.venc, tipo: 'cartao' });
+
+  // 2. Cartões — UMA linha por cartão com o total do mês somado
+  const cartoesDoMes = getMesAtualCartoes(mes, ano);
+  for (const c of cartoesDoMes) {
+    itens.push({ id: 'cartao_' + c.id, nome: c.nome, valor: c.valor, venc: c.venc, tipo: 'cartao' });
   }
+
+  // 3. Parceladas avulsas — uma linha por conta com a parcela do mês
+  const avulsasDoMes = getMesAtualParceladasAvulsas(mes, ano);
+  for (const c of avulsasDoMes) {
+    itens.push({ id: 'parcelada_' + c.id, nome: c.nome + ' (' + c.parcelaInfo + ')', valor: c.valor, venc: c.venc, tipo: 'parcelada' });
+  }
+
   return itens;
 }
 
