@@ -927,7 +927,7 @@ select option { background: var(--bg3); }
 // =============================================
 // CONFIGURAÇÃO — ALTERE AQUI
 // =============================================
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxP58g3TQLFDp2EZDtWH1geDc0haEwokKyoox1oxmumTraWLb_HK_z31-GE5Tn-hZBS/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx2xOp9hnglgkyNxQ-CbuYblr6TNVu0skl9JHR3rILsZLJzH7oohG6bHFTn2Jay9je2/exec';
 
 const USERS = {
   ivson:   { nome: 'Ivson',   pin: '1234', avatar: 'IV', cor: '#6c8dfa' },
@@ -1054,29 +1054,47 @@ function closeSidebar() {
 }
 
 // =============================================
-// API — GOOGLE SHEETS
+// API — GOOGLE SHEETS (v2 — por abas)
 // =============================================
+let apiOnline = false;
+
 async function apiCall(action, payload = {}) {
+  if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL === 'SUA_URL_DO_APPS_SCRIPT_AQUI') return null;
   try {
     const res = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       body: JSON.stringify({ action, ...payload })
     });
-    return await res.json();
+    const json = await res.json();
+    apiOnline = true;
+    return json;
   } catch (e) {
-    console.warn('API indisponível, usando dados locais:', e.message);
+    apiOnline = false;
+    console.warn('API indisponível — modo offline:', e.message);
     return null;
   }
 }
 
 async function carregarDados() {
+  mostrarLoadingApp(true);
   const res = await apiCall('getDados');
   if (res && res.success) {
     dados = res.dados;
+    // Garantir que todos os arrays existam
+    dados.contas     = dados.contas     || [];
+    dados.compras    = dados.compras    || [];
+    dados.receitas   = dados.receitas   || [];
+    dados.reservas   = dados.reservas   || [];
+    dados.pagamentos = dados.pagamentos || [];
   } else {
-    // Modo offline — dados de exemplo
     dados = getExampleData();
+    if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL === 'SUA_URL_DO_APPS_SCRIPT_AQUI') {
+      mostrarBannerOffline('Configure a URL do Apps Script no arquivo index.html para salvar dados no Google Sheets.');
+    } else {
+      mostrarBannerOffline('Não foi possível conectar ao Google Sheets. Exibindo dados de exemplo.');
+    }
   }
+  mostrarLoadingApp(false);
   renderAll();
 }
 
@@ -1088,7 +1106,7 @@ function getExampleData() {
       { id: 3, nome: 'Nubank', tipo: 'cartao', venc: 10, valor: 0, bandeira: 'Mastercard' }
     ],
     compras: [
-      { id: 1, cartaoId: 3, desc: 'Supermercado', data: '2025-06-03', modalidade: 'rotativo', valor: 350, parcelas: 1, parcelaAtual: 1 }
+      { id: 1, cartaoId: 3, desc: 'Supermercado', data: new Date().toISOString().split('T')[0], modalidade: 'rotativo', valor: 350, parcelas: 1 }
     ],
     receitas: [
       { id: 1, desc: 'Salário Ivson', valor: 4500, dia: 5 },
@@ -1103,8 +1121,50 @@ function getExampleData() {
   };
 }
 
-async function salvarDados() {
-  await apiCall('setDados', { dados });
+// Salva APENAS o item modificado (não regrava tudo)
+async function apiSalvarItem(action, item) {
+  const res = await apiCall(action, { item });
+  if (res && res.success && res.id) {
+    item.id = res.id; // atualiza o ID gerado pelo backend
+  }
+  return res;
+}
+
+async function apiDeletar(nomeAba, id) {
+  const actionMap = {
+    'Contas': 'deletarConta', 'Compras': 'deletarCompra',
+    'Receitas': 'deletarReceita', 'Reservas': 'deletarReserva'
+  };
+  return await apiCall(actionMap[nomeAba], { id });
+}
+
+async function apiSalvarPagamentos(chave, itens) {
+  return await apiCall('salvarPagamentos', { chave, itens });
+}
+
+function mostrarLoadingApp(show) {
+  let el = document.getElementById('appLoading');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'appLoading';
+    el.style.cssText = 'position:fixed;bottom:20px;right:20px;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:10px 16px;font-size:13px;color:var(--text2);display:flex;align-items:center;gap:8px;z-index:500;transition:opacity 0.3s';
+    el.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px"></div> Sincronizando...';
+    document.body.appendChild(el);
+  }
+  el.style.opacity = show ? '1' : '0';
+  if (!show) setTimeout(() => { if (el) el.style.display = 'none'; }, 400);
+  else el.style.display = 'flex';
+}
+
+function mostrarBannerOffline(msg) {
+  let el = document.getElementById('bannerOffline');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'bannerOffline';
+    el.style.cssText = 'background:rgba(251,191,36,0.1);border-bottom:1px solid rgba(251,191,36,0.3);color:var(--amber);font-size:13px;padding:10px 28px;text-align:center;';
+    document.querySelector('.main-content').prepend(el);
+  }
+  el.textContent = '⚠️ ' + msg;
 }
 
 // =============================================
@@ -1381,25 +1441,31 @@ async function salvarConta() {
 
   if (!nome || !venc) { alert('Preencha todos os campos obrigatórios.'); return; }
 
+  const item = { nome, tipo, venc, valor, bandeira };
   if (editingContaId) {
+    item.id = editingContaId;
     const idx = dados.contas.findIndex(c => c.id === editingContaId);
-    dados.contas[idx] = { id: editingContaId, nome, tipo, venc, valor, bandeira };
+    dados.contas[idx] = { ...item };
   } else {
-    const newId = Date.now();
-    dados.contas.push({ id: newId, nome, tipo, venc, valor, bandeira });
+    item.id = Date.now();
+    dados.contas.push({ ...item });
   }
 
-  await salvarDados();
   closeModal('modalConta');
   renderAll();
+  mostrarLoadingApp(true);
+  await apiSalvarItem('salvarConta', item);
+  mostrarLoadingApp(false);
 }
 
 function deleteConta(id) {
   showConfirm('Excluir esta conta permanentemente?', async () => {
     dados.contas = dados.contas.filter(c => c.id !== id);
     dados.compras = dados.compras.filter(c => c.cartaoId !== id);
-    await salvarDados();
     renderAll();
+    mostrarLoadingApp(true);
+    await apiDeletar('Contas', id);
+    mostrarLoadingApp(false);
   });
 }
 
@@ -1433,17 +1499,22 @@ async function salvarCompra() {
 
   if (!desc || !data || !valor) { alert('Preencha todos os campos.'); return; }
 
-  dados.compras.push({ id: Date.now(), cartaoId: currentCartaoId, desc, data, modalidade, valor, parcelas });
-  await salvarDados();
+  const item = { id: Date.now(), cartaoId: currentCartaoId, desc, data, modalidade, valor, parcelas };
+  dados.compras.push(item);
   closeModal('modalCompra');
   renderAll();
+  mostrarLoadingApp(true);
+  await apiSalvarItem('salvarCompra', item);
+  mostrarLoadingApp(false);
 }
 
 function deleteCompra(id) {
   showConfirm('Excluir esta compra parcelada?', async () => {
     dados.compras = dados.compras.filter(c => c.id !== id);
-    await salvarDados();
     renderAll();
+    mostrarLoadingApp(true);
+    await apiDeletar('Compras', id);
+    mostrarLoadingApp(false);
   });
 }
 
@@ -1487,17 +1558,22 @@ async function salvarReceita() {
   const valor = parseFloat(document.getElementById('receitaValor').value);
   const dia = parseInt(document.getElementById('receitaDia').value);
   if (!desc || !valor || !dia) { alert('Preencha todos os campos.'); return; }
-  dados.receitas.push({ id: Date.now(), desc, valor, dia });
-  await salvarDados();
+  const item = { id: Date.now(), desc, valor, dia };
+  dados.receitas.push(item);
   closeModal('modalReceita');
   renderAll();
+  mostrarLoadingApp(true);
+  await apiSalvarItem('salvarReceita', item);
+  mostrarLoadingApp(false);
 }
 
 function deleteReceita(id) {
   showConfirm('Excluir esta receita?', async () => {
     dados.receitas = dados.receitas.filter(r => r.id !== id);
-    await salvarDados();
     renderAll();
+    mostrarLoadingApp(true);
+    await apiDeletar('Receitas', id);
+    mostrarLoadingApp(false);
   });
 }
 
@@ -1570,17 +1646,22 @@ async function salvarReserva() {
   const nome = document.getElementById('reservaNome').value.trim();
   const pct = parseFloat(document.getElementById('reservaPct').value);
   if (!nome || !pct) { alert('Preencha todos os campos.'); return; }
-  dados.reservas.push({ id: Date.now(), nome, pct });
-  await salvarDados();
+  const item = { id: Date.now(), nome, pct };
+  dados.reservas.push(item);
   closeModal('modalReserva');
   renderAll();
+  mostrarLoadingApp(true);
+  await apiSalvarItem('salvarReserva', item);
+  mostrarLoadingApp(false);
 }
 
 function deleteReserva(id) {
   showConfirm('Excluir esta reserva?', async () => {
     dados.reservas = dados.reservas.filter(r => r.id !== id);
-    await salvarDados();
     renderAll();
+    mostrarLoadingApp(true);
+    await apiDeletar('Reservas', id);
+    mostrarLoadingApp(false);
   });
 }
 
@@ -1684,15 +1765,22 @@ async function salvarPagamentos() {
   const now = new Date();
   const chave = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
   dados.pagamentos = dados.pagamentos.filter(p => p.chave !== chave);
+
+  const itensPagos = [];
   for (const [itemId, pg] of Object.entries(mesPagamentos)) {
     if (pg.pago) {
       const item = mesItens.find(i => i.id === itemId);
-      dados.pagamentos.push({ chave, itemId, nome: item?.nome || itemId, pago: true, valorPago: pg.valorPago });
+      const registro = { chave, itemId, nome: item?.nome || itemId, pago: true, valorPago: pg.valorPago };
+      dados.pagamentos.push(registro);
+      itensPagos.push(registro);
     }
   }
-  await salvarDados();
+
   closeModal('modalMes');
   renderAll();
+  mostrarLoadingApp(true);
+  await apiSalvarPagamentos(chave, itensPagos);
+  mostrarLoadingApp(false);
 }
 
 // =============================================
