@@ -494,7 +494,25 @@ select option { background: var(--bg3); }
 .provision-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--purple)); transition: width 0.6s; }
 .provision-detail { display: flex; justify-content: space-between; font-size: 12px; color: var(--text3); }
 
-/* RESPONSIVE */
+/* TOGGLE SWITCH */
+.toggle-switch { position: relative; display: inline-block; cursor: pointer; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.toggle-track {
+  display: block; width: 44px; height: 24px;
+  background: var(--bg4); border: 1px solid var(--border2);
+  border-radius: 99px; transition: background 0.2s, border-color 0.2s;
+  position: relative;
+}
+.toggle-thumb {
+  position: absolute; top: 3px; left: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--text3); transition: transform 0.2s, background 0.2s;
+}
+.toggle-switch input:checked + .toggle-track { background: rgba(74,222,128,0.2); border-color: var(--green); }
+.toggle-switch input:checked + .toggle-track .toggle-thumb { background: var(--green); transform: translateX(20px); }
+
+/* BADGE INATIVA */
+.badge-inativa { background: rgba(74,85,104,0.3); color: var(--text3); font-size: 10px; padding: 2px 7px; border-radius: 99px; font-weight: 600; margin-left: 6px; }
 @media (max-width: 900px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .charts-grid { grid-template-columns: 1fr; }
@@ -777,6 +795,18 @@ select option { background: var(--bg3); }
         <div class="form-group">
           <label>Dia de vencimento</label>
           <input type="number" id="contaVenc" min="1" max="31" placeholder="Ex: 15">
+        </div>
+
+        <!-- Vigente toggle — ocupa linha inteira -->
+        <div class="form-group full" style="flex-direction:row;align-items:center;gap:14px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px">
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:500;color:var(--text)">Conta vigente</div>
+            <div style="font-size:12px;color:var(--text3);margin-top:2px">Contas vigentes aparecem no checklist mensal mesmo sem valor previsto</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="contaVigente" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
         </div>
 
         <!-- Conta fixa -->
@@ -1399,15 +1429,16 @@ function renderContas() {
     el.innerHTML = `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">Nenhuma conta cadastrada</div><div class="empty-state-sub">Clique em "Nova Conta" para começar</div></div>`;
   } else {
     const badgeMap = {
-      fixa:      ['type-fixed',  'Fixa'],
-      cartao:    ['type-credit', 'Cartão'],
+      fixa:      ['type-fixed',     'Fixa'],
+      cartao:    ['type-credit',    'Cartão'],
       parcelada: ['type-parcelada', 'Parcelada']
     };
     el.innerHTML = `<table>
-      <thead><tr><th>Nome</th><th>Tipo</th><th>Vencimento</th><th>Valor / Info</th><th>Ações</th></tr></thead>
+      <thead><tr><th>Nome</th><th>Tipo</th><th>Venc.</th><th>Valor / Info</th><th>Status</th><th>Ações</th></tr></thead>
       <tbody>
         ${dados.contas.map(c => {
           const [cls, label] = badgeMap[c.tipo] || ['type-fixed','—'];
+          const vigente = c.vigente !== false; // default true
           let info = '';
           if (c.tipo === 'fixa') info = fmtMoney(c.valor);
           else if (c.tipo === 'cartao') info = c.bandeira;
@@ -1415,11 +1446,17 @@ function renderContas() {
             const valP = c.numParcelas ? +(c.valorTotal / c.numParcelas).toFixed(2) : 0;
             info = `${fmtMoney(valP)}/mês · ${c.numParcelas}x · início ${c.mesInicio || '—'}`;
           }
-          return `<tr>
-            <td><strong>${c.nome}</strong></td>
+          return `<tr style="opacity:${vigente ? 1 : 0.45}">
+            <td><strong>${c.nome}</strong>${!vigente ? '<span class="badge-inativa">inativa</span>' : ''}</td>
             <td><span class="type-badge ${cls}">${label}</span></td>
             <td>Dia ${c.venc}</td>
             <td style="font-size:13px">${info}</td>
+            <td>
+              <label class="toggle-switch" title="${vigente ? 'Clique para inativar' : 'Clique para ativar'}">
+                <input type="checkbox" ${vigente ? 'checked' : ''} onchange="toggleVigente(${c.id}, this.checked)">
+                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              </label>
+            </td>
             <td><div class="actions">
               ${c.tipo === 'cartao' ? `<button class="btn btn-ghost btn-sm" onclick="openCompraModal(${c.id})">+ Compra</button>` : ''}
               <button class="btn btn-ghost btn-sm" onclick="editConta(${c.id})">✎</button>
@@ -1458,44 +1495,31 @@ function renderContas() {
   }
 }
 
-function openContaModal(id = null) {
-  editingContaId = id;
-  document.getElementById('modalContaTitulo').textContent = id ? 'Editar Conta' : 'Nova Conta';
-  if (id) {
-    const c = dados.contas.find(c => c.id === id);
-    document.getElementById('contaNome').value = c.nome;
-    document.getElementById('contaTipo').value = c.tipo;
-    document.getElementById('contaVenc').value = c.venc;
-    document.getElementById('contaValor').value = c.valor;
-    document.getElementById('contaBandeira').value = c.bandeira;
-    onTipoChange();
-  } else {
-    document.getElementById('contaNome').value = '';
-    document.getElementById('contaTipo').value = 'fixa';
-    document.getElementById('contaVenc').value = '';
-    document.getElementById('contaValor').value = '';
-    document.getElementById('contaBandeira').value = '';
-    onTipoChange();
-  }
-  openModal('modalConta');
-}
-
-function editConta(id) { openContaModal(id); }
-
 function onTipoChange() {
   const tipo = document.getElementById('contaTipo').value;
-  document.getElementById('grupoValorFixo').style.display      = tipo === 'fixa'      ? 'flex' : 'none';
-  document.getElementById('grupoCartaoTipo').style.display     = tipo === 'cartao'    ? 'flex' : 'none';
-  document.getElementById('grupoParceladaValor').style.display = tipo === 'parcelada' ? 'flex' : 'none';
-  document.getElementById('grupoParceladaNum').style.display   = tipo === 'parcelada' ? 'flex' : 'none';
-  document.getElementById('grupoParceladaInicio').style.display= tipo === 'parcelada' ? 'flex' : 'none';
-  document.getElementById('grupoParceladaCalc').style.display  = tipo === 'parcelada' ? 'flex' : 'none';
+  document.getElementById('grupoValorFixo').style.display       = tipo === 'fixa'      ? 'flex' : 'none';
+  document.getElementById('grupoCartaoTipo').style.display      = tipo === 'cartao'    ? 'flex' : 'none';
+  document.getElementById('grupoParceladaValor').style.display  = tipo === 'parcelada' ? 'flex' : 'none';
+  document.getElementById('grupoParceladaNum').style.display    = tipo === 'parcelada' ? 'flex' : 'none';
+  document.getElementById('grupoParceladaInicio').style.display = tipo === 'parcelada' ? 'flex' : 'none';
+  document.getElementById('grupoParceladaCalc').style.display   = tipo === 'parcelada' ? 'flex' : 'none';
 }
 
 function calcularParcelaAvulsa() {
   const total = parseFloat(document.getElementById('contaValorTotal').value) || 0;
-  const num   = parseInt(document.getElementById('contaNumParcelas').value) || 0;
-  document.getElementById('contaValorParcela').value = (num > 0) ? fmtMoney(+(total / num).toFixed(2)) : '';
+  const num   = parseInt(document.getElementById('contaNumParcelas').value)  || 0;
+  document.getElementById('contaValorParcela').value = num > 0 ? fmtMoney(+(total / num).toFixed(2)) : '';
+}
+
+async function toggleVigente(id, vigente) {
+  const idx = dados.contas.findIndex(c => c.id === id);
+  if (idx < 0) return;
+  dados.contas[idx].vigente = vigente;
+  renderContas();
+  renderDashboard();
+  mostrarLoadingApp(true);
+  await apiSalvarItem('salvarConta', dados.contas[idx]);
+  mostrarLoadingApp(false);
 }
 
 function openContaModal(id = null) {
@@ -1503,25 +1527,27 @@ function openContaModal(id = null) {
   document.getElementById('modalContaTitulo').textContent = id ? 'Editar Conta' : 'Nova Conta';
   if (id) {
     const c = dados.contas.find(c => c.id === id);
-    document.getElementById('contaNome').value       = c.nome;
-    document.getElementById('contaTipo').value       = c.tipo;
-    document.getElementById('contaVenc').value       = c.venc;
-    document.getElementById('contaValor').value      = c.valor || '';
-    document.getElementById('contaBandeira').value   = c.bandeira || '';
-    document.getElementById('contaValorTotal').value = c.valorTotal || '';
-    document.getElementById('contaNumParcelas').value= c.numParcelas || '';
-    document.getElementById('contaMesInicio').value  = c.mesInicio || '';
+    document.getElementById('contaNome').value        = c.nome;
+    document.getElementById('contaTipo').value        = c.tipo;
+    document.getElementById('contaVenc').value        = c.venc;
+    document.getElementById('contaVigente').checked  = c.vigente !== false;
+    document.getElementById('contaValor').value       = c.valor || '';
+    document.getElementById('contaBandeira').value    = c.bandeira || '';
+    document.getElementById('contaValorTotal').value  = c.valorTotal || '';
+    document.getElementById('contaNumParcelas').value = c.numParcelas || '';
+    document.getElementById('contaMesInicio').value   = c.mesInicio || '';
     calcularParcelaAvulsa();
   } else {
-    document.getElementById('contaNome').value       = '';
-    document.getElementById('contaTipo').value       = 'fixa';
-    document.getElementById('contaVenc').value       = '';
-    document.getElementById('contaValor').value      = '';
-    document.getElementById('contaBandeira').value   = '';
-    document.getElementById('contaValorTotal').value = '';
-    document.getElementById('contaNumParcelas').value= '';
-    document.getElementById('contaMesInicio').value  = '';
-    document.getElementById('contaValorParcela').value = '';
+    document.getElementById('contaNome').value        = '';
+    document.getElementById('contaTipo').value        = 'fixa';
+    document.getElementById('contaVenc').value        = '';
+    document.getElementById('contaVigente').checked  = true;
+    document.getElementById('contaValor').value       = '';
+    document.getElementById('contaBandeira').value    = '';
+    document.getElementById('contaValorTotal').value  = '';
+    document.getElementById('contaNumParcelas').value = '';
+    document.getElementById('contaMesInicio').value   = '';
+    document.getElementById('contaValorParcela').value= '';
   }
   onTipoChange();
   openModal('modalConta');
@@ -1530,12 +1556,13 @@ function openContaModal(id = null) {
 function editConta(id) { openContaModal(id); }
 
 async function salvarConta() {
-  const nome = document.getElementById('contaNome').value.trim();
-  const tipo = document.getElementById('contaTipo').value;
-  const venc = parseInt(document.getElementById('contaVenc').value);
+  const nome    = document.getElementById('contaNome').value.trim();
+  const tipo    = document.getElementById('contaTipo').value;
+  const venc    = parseInt(document.getElementById('contaVenc').value);
+  const vigente = document.getElementById('contaVigente').checked;
   if (!nome || !venc) { alert('Preencha nome e dia de vencimento.'); return; }
 
-  const item = { nome, tipo, venc,
+  const item = { nome, tipo, venc, vigente,
     valor:       parseFloat(document.getElementById('contaValor').value) || 0,
     bandeira:    document.getElementById('contaBandeira').value.trim(),
     valorTotal:  parseFloat(document.getElementById('contaValorTotal').value) || 0,
@@ -1775,23 +1802,39 @@ function deleteReserva(id) {
 function getItensMes(mes, ano) {
   const itens = [];
 
-  // 1. Contas fixas — uma linha por conta
-  for (const c of dados.contas.filter(c => c.tipo === 'fixa')) {
-    itens.push({ id: 'fixa_' + c.id, nome: c.nome, valor: c.valor, venc: c.venc, tipo: 'fixa' });
+  // Apenas contas vigentes entram no checklist
+  const vigentes = dados.contas.filter(c => c.vigente !== false);
+
+  // 1. Contas fixas vigentes — sempre aparecem com valor previsto (pode ser 0)
+  for (const c of vigentes.filter(c => c.tipo === 'fixa')) {
+    itens.push({ id: 'fixa_' + c.id, nome: c.nome, valor: c.valor || 0, venc: c.venc, tipo: 'fixa' });
   }
 
-  // 2. Cartões — UMA linha por cartão com o total do mês somado
-  const cartoesDoMes = getMesAtualCartoes(mes, ano);
-  for (const c of cartoesDoMes) {
-    itens.push({ id: 'cartao_' + c.id, nome: c.nome, valor: c.valor, venc: c.venc, tipo: 'cartao' });
+  // 2. Cartões vigentes — sempre aparecem; valor = soma das compras do mês (pode ser 0 se não tiver compras)
+  const mapaCartoes = {};
+  for (const c of getMesAtualCartoes(mes, ano)) {
+    mapaCartoes[c.id] = c.valor;
+  }
+  for (const c of vigentes.filter(c => c.tipo === 'cartao')) {
+    const valorMes = mapaCartoes[c.id] || 0;
+    itens.push({ id: 'cartao_' + c.id, nome: c.nome, valor: valorMes, venc: c.venc, tipo: 'cartao' });
   }
 
-  // 3. Parceladas avulsas — uma linha por conta com a parcela do mês
-  const avulsasDoMes = getMesAtualParceladasAvulsas(mes, ano);
-  for (const c of avulsasDoMes) {
-    itens.push({ id: 'parcelada_' + c.id, nome: c.nome + ' (' + c.parcelaInfo + ')', valor: c.valor, venc: c.venc, tipo: 'parcelada' });
+  // 3. Parceladas avulsas vigentes — aparecem apenas nos meses em que há parcela;
+  //    fora do período não aparecem (conta encerrada naturalmente)
+  const mapaParceladas = {};
+  for (const c of getMesAtualParceladasAvulsas(mes, ano)) {
+    mapaParceladas[c.id] = c;
+  }
+  for (const c of vigentes.filter(c => c.tipo === 'parcelada')) {
+    if (mapaParceladas[c.id]) {
+      const p = mapaParceladas[c.id];
+      itens.push({ id: 'parcelada_' + c.id, nome: c.nome + ' (' + p.parcelaInfo + ')', valor: p.valor, venc: c.venc, tipo: 'parcelada' });
+    }
   }
 
+  // Ordenar por dia de vencimento
+  itens.sort((a, b) => a.venc - b.venc);
   return itens;
 }
 
