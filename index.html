@@ -650,7 +650,11 @@ select option { background: var(--bg3); }
             <div class="page-title">Dashboard</div>
             <div class="page-sub" id="dashboardSub">Visão geral das finanças</div>
           </div>
-          <button class="btn btn-primary" onclick="openMonthModal()">▶ Abrir Mês Atual</button>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+            <button class="btn btn-ghost btn-sm" onclick="openMonthModalRelativo(-1)" id="btnMesAnterior" style="font-size:12px;padding:7px 12px">◀ <span id="labelMesAnterior">—</span></button>
+            <button class="btn btn-primary" onclick="openMonthModal()" style="font-size:14px">▶ Abrir Mês Atual</button>
+            <button class="btn btn-ghost btn-sm" onclick="openMonthModalRelativo(1)" id="btnProximoMes" style="font-size:12px;padding:7px 12px"><span id="labelProximoMes">—</span> ▶</button>
+          </div>
         </div>
 
         <!-- STATS -->
@@ -1242,17 +1246,51 @@ function renderAll() {
 // =============================================
 // DASHBOARD
 // =============================================
+// Retorna o valor comprometido real do mês:
+// contas pagas → valor pago real; contas pendentes → valor previsto
 function calcFinanceiro() {
   const now = new Date();
   const mes = now.getMonth() + 1, ano = now.getFullYear();
+  const chave = chaveMes(mes, ano);
   const receita = dados.receitas.reduce((s, r) => s + r.valor, 0);
-  const fixo = dados.contas.filter(c => c.tipo === 'fixa').reduce((s, c) => s + c.valor, 0);
-  const totalCartoes = getMesAtualCartoes(mes, ano).reduce((s, c) => s + c.valor, 0);
-  const totalParceladasAvulsas = getMesAtualParceladasAvulsas(mes, ano).reduce((s, c) => s + c.valor, 0);
-  const totalFixo = fixo + totalCartoes + totalParceladasAvulsas;
+
+  const itens = getItensMes(mes, ano);
+  const pagsMes = getPagamentosMes(chave);
+
+  // Para cada item: se pago → valorPago, senão → valor previsto
+  const totalComprometido = itens.reduce((s, item) => {
+    const pg = pagsMes[item.id];
+    return s + (pg ? pg.valorPago : item.valor);
+  }, 0);
+
+  // Contas extras pagas (não estavam nos itens previstos)
+  const extrasTotal = Object.entries(pagsMes)
+    .filter(([id]) => !itens.find(i => i.id === id))
+    .reduce((s, [, pg]) => s + pg.valorPago, 0);
+
+  const fixoTotal = totalComprometido + extrasTotal;
   const reservasVal = dados.reservas.reduce((s, r) => s + (receita * r.pct / 100), 0);
-  const livre = receita - totalFixo - reservasVal;
-  return { receita, fixo: totalFixo, reservasVal, livre };
+  const livre = receita - fixoTotal - reservasVal;
+  return { receita, fixo: fixoTotal, reservasVal, livre };
+}
+
+// Mapa itemId → {valorPago} dos pagamentos de um mês
+function getPagamentosMes(chave) {
+  const mapa = {};
+  for (const p of dados.pagamentos.filter(p => p.chave === chave)) {
+    mapa[p.itemId] = { valorPago: p.valorPago, nome: p.nome };
+  }
+  return mapa;
+}
+
+function chaveMes(mes, ano) {
+  return `${ano}-${String(mes).padStart(2,'0')}`;
+}
+
+function mesRelativo(delta) {
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth() + delta, 1);
+  return { mes: d.getMonth() + 1, ano: d.getFullYear() };
 }
 
 // Retorna valor de cada cartão agrupado (soma de todas as compras do mês daquele cartão)
@@ -1326,23 +1364,76 @@ function renderDashboard() {
   livreEl.textContent = fmtMoney(livre);
   livreEl.style.color = livre >= 0 ? 'var(--green)' : 'var(--red)';
 
-  const pctFixo = receita > 0 ? Math.round(fixo / receita * 100) : 0;
-  const pctRes = receita > 0 ? Math.round(reservasVal / receita * 100) : 0;
+  const pctFixo  = receita > 0 ? Math.round(fixo / receita * 100) : 0;
+  const pctRes   = receita > 0 ? Math.round(reservasVal / receita * 100) : 0;
   const pctLivre = 100 - pctFixo - pctRes;
   const pctTotal = pctFixo + pctRes;
 
-  document.getElementById('provisionPct').textContent = pctTotal + '%';
-  document.getElementById('provisionBar').style.width = Math.min(pctTotal, 100) + '%';
+  document.getElementById('provisionPct').textContent  = pctTotal + '%';
+  document.getElementById('provisionBar').style.width  = Math.min(pctTotal, 100) + '%';
   document.getElementById('provisionFixed').textContent = pctFixo + '%';
-  document.getElementById('provisionRes').textContent = pctRes + '%';
-  document.getElementById('provisionFree').textContent = Math.max(pctLivre, 0) + '%';
+  document.getElementById('provisionRes').textContent   = pctRes + '%';
+  document.getElementById('provisionFree').textContent  = Math.max(pctLivre, 0) + '%';
+
+  // Labels dos botões de mês anterior e próximo
+  const mAnterior = mesRelativo(-1);
+  const mProximo  = mesRelativo(1);
+  const el1 = document.getElementById('labelMesAnterior');
+  const el2 = document.getElementById('labelProximoMes');
+  if (el1) el1.textContent = MESES[mAnterior.mes - 1].substring(0, 3);
+  if (el2) el2.textContent = MESES[mProximo.mes - 1].substring(0, 3);
 
   renderCharts(receita, fixo, reservasVal, livre);
   renderDashboardPayments();
 }
 
-let chartLine, chartDoughnut;
+function renderDashboardPayments() {
+  const el = document.getElementById('dashboardPayments');
+  const now = new Date();
+  const mes = now.getMonth() + 1, ano = now.getFullYear();
+  const chave = chaveMes(mes, ano);
 
+  const itens = getItensMes(mes, ano);
+  const pagsMes = getPagamentosMes(chave);
+
+  // Contas extras pagas (inseridas manualmente no checklist)
+  const extras = dados.pagamentos
+    .filter(p => p.chave === chave && !itens.find(i => i.id === p.itemId));
+
+  const totalItens = [...itens, ...extras.map(e => ({ id: e.itemId, nome: e.nome, valor: e.valorPago, venc: 0 }))];
+
+  if (totalItens.length === 0) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">Nenhuma conta cadastrada</div><div class="empty-state-sub">Cadastre suas contas em "Contas & Limites"</div></div>`;
+    return;
+  }
+
+  const pagosCount  = totalItens.filter(i => pagsMes[i.id]).length;
+  const pendCount   = totalItens.filter(i => !pagsMes[i.id]).length;
+  const totalPago   = Object.values(pagsMes).reduce((s, p) => s + p.valorPago, 0);
+  const totalPrevisto = itens.reduce((s, i) => s + (pagsMes[i.id] ? 0 : i.valor), 0);
+
+  el.innerHTML = `
+    <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+      <span class="tag" style="background:rgba(74,222,128,0.1);color:var(--green)">${pagosCount} pago${pagosCount !== 1?'s':''}</span>
+      <span class="tag" style="background:rgba(248,113,113,0.1);color:var(--red)">${pendCount} pendente${pendCount !== 1?'s':''}</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+    ${totalItens.slice(0, 5).map(item => {
+      const pg = pagsMes[item.id];
+      const isPago = !!pg;
+      return `<div style="display:flex;align-items:center;gap:12px;padding:10px;background:${isPago?'rgba(74,222,128,0.04)':'var(--bg3)'};border:1px solid ${isPago?'rgba(74,222,128,0.2)':'var(--border)'};border-radius:8px">
+        <span style="font-size:16px">${isPago ? '✓' : '○'}</span>
+        <span style="flex:1;font-size:14px">${item.nome}</span>
+        <span style="font-size:13px;color:var(--text2)">${item.venc ? 'Dia ' + item.venc : ''}</span>
+        <span style="font-weight:600;font-size:14px;color:${isPago?'var(--green)':'var(--text)'}">${fmtMoney(isPago ? pg.valorPago : item.valor)}</span>
+      </div>`;
+    }).join('')}
+    ${totalItens.length > 5 ? `<div style="text-align:center;font-size:13px;color:var(--text3);padding:8px">+${totalItens.length-5} contas — <a href="#" onclick="openMonthModal();return false" style="color:var(--accent)">ver todas</a></div>` : ''}
+    </div>
+  `;
+}
+
+let chartLine, chartDoughnut;
 function renderCharts(receita, fixo, reservasVal, livre) {
   const ctx1 = document.getElementById('chartLine').getContext('2d');
   const ctx2 = document.getElementById('chartDoughnut').getContext('2d');
@@ -1391,45 +1482,7 @@ function renderCharts(receita, fixo, reservasVal, livre) {
   });
 }
 
-function renderDashboardPayments() {
-  const el = document.getElementById('dashboardPayments');
-  const now = new Date();
-  const mes = now.getMonth() + 1;
-  const ano = now.getFullYear();
-  const chave = `${ano}-${String(mes).padStart(2,'0')}`;
-  const pags = dados.pagamentos.filter(p => p.chave === chave);
 
-  const itens = getItensMes(mes, ano);
-  if (itens.length === 0) {
-    el.innerHTML = `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">Nenhuma conta cadastrada</div><div class="empty-state-sub">Cadastre suas contas em "Contas & Limites"</div></div>`;
-    return;
-  }
-
-  const pago = itens.filter(i => pags.some(p => p.itemId === i.id && p.pago)).length;
-  el.innerHTML = `
-    <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap">
-      <span class="tag" style="background:rgba(74,222,128,0.1);color:var(--green)">${pago} pago${pago !== 1 ? 's' : ''}</span>
-      <span class="tag" style="background:rgba(248,113,113,0.1);color:var(--red)">${itens.length - pago} pendente${itens.length - pago !== 1 ? 's' : ''}</span>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:8px">
-    ${itens.slice(0,5).map(item => {
-      const pg = pags.find(p => p.itemId === item.id);
-      const isPago = pg && pg.pago;
-      return `<div style="display:flex;align-items:center;gap:12px;padding:10px;background:${isPago ? 'rgba(74,222,128,0.04)' : 'var(--bg3)'};border:1px solid ${isPago ? 'rgba(74,222,128,0.2)' : 'var(--border)'};border-radius:8px">
-        <span style="font-size:16px">${isPago ? '✓' : '○'}</span>
-        <span style="flex:1;font-size:14px">${item.nome}</span>
-        <span style="font-size:13px;color:var(--text2)">Dia ${item.venc}</span>
-        <span style="font-weight:600;font-size:14px;color:${isPago ? 'var(--green)' : 'var(--text)'}">${fmtMoney(isPago ? pg.valorPago : item.valor)}</span>
-      </div>`;
-    }).join('')}
-    ${itens.length > 5 ? `<div style="text-align:center;font-size:13px;color:var(--text3);padding:8px">+${itens.length-5} contas — <a href="#" onclick="openMonthModal();return false" style="color:var(--accent)">ver todas</a></div>` : ''}
-    </div>
-  `;
-}
-
-// =============================================
-// CONTAS
-// =============================================
 function renderContas() {
   const el = document.getElementById('contasTable');
   if (dados.contas.length === 0) {
@@ -1846,47 +1899,80 @@ function getItensMes(mes, ano) {
 }
 
 let mesItens = [];
-let mesPagamentos = {};
+let mesPagamentos = {};  // itemId → { valorPago }
+let mesChaveAtual = '';
 
 function openMonthModal() {
   const now = new Date();
-  const mes = now.getMonth() + 1;
-  const ano = now.getFullYear();
-  const chave = `${ano}-${String(mes).padStart(2,'0')}`;
+  abrirChecklist(now.getMonth() + 1, now.getFullYear());
+}
 
-  document.getElementById('modalMesTitulo').textContent = 'Contas de ' + MESES[now.getMonth()] + ' ' + ano;
+function openMonthModalRelativo(delta) {
+  const { mes, ano } = mesRelativo(delta);
+  abrirChecklist(mes, ano);
+}
+
+function abrirChecklist(mes, ano) {
+  mesChaveAtual = chaveMes(mes, ano);
+  document.getElementById('modalMesTitulo').textContent =
+    'Contas de ' + MESES[mes - 1] + ' ' + ano;
 
   mesItens = getItensMes(mes, ano);
-  const pags = dados.pagamentos.filter(p => p.chave === chave);
-  mesPagamentos = {};
-  for (const p of pags) mesPagamentos[p.itemId] = { pago: p.pago, valorPago: p.valorPago };
 
-  renderPaymentList(chave);
+  // Carregar o que já está pago de dados.pagamentos (persiste entre sessões)
+  mesPagamentos = {};
+  for (const p of dados.pagamentos.filter(p => p.chave === mesChaveAtual)) {
+    mesPagamentos[p.itemId] = { valorPago: p.valorPago, nome: p.nome };
+  }
+
+  // Adicionar ao mesItens as contas extras salvas que não são itens previstos
+  for (const p of dados.pagamentos.filter(p => p.chave === mesChaveAtual)) {
+    if (!mesItens.find(i => i.id === p.itemId)) {
+      mesItens.push({ id: p.itemId, nome: p.nome, valor: p.valorPago, venc: 0, tipo: 'extra' });
+    }
+  }
+
+  renderPaymentList();
   openModal('modalMes');
 }
 
-function renderPaymentList(chave) {
-  const total = mesItens.reduce((s, i) => s + i.valor, 0);
-  const pago = mesItens.filter(i => mesPagamentos[i.id]?.pago).reduce((s, i) => s + (mesPagamentos[i.id]?.valorPago || 0), 0);
+function renderPaymentList() {
+  const totalPrevisto = mesItens.reduce((s, i) => s + i.valor, 0);
+  const totalPago     = mesItens.reduce((s, i) => {
+    const pg = mesPagamentos[i.id];
+    return s + (pg ? pg.valorPago : 0);
+  }, 0);
+  const totalPendente = mesItens.reduce((s, i) => {
+    return s + (mesPagamentos[i.id] ? 0 : i.valor);
+  }, 0);
 
   document.getElementById('mesResumo').innerHTML =
-    `Total previsto: <strong>${fmtMoney(total)}</strong> &nbsp;|&nbsp; Pago: <strong style="color:var(--green)">${fmtMoney(pago)}</strong> &nbsp;|&nbsp; Pendente: <strong style="color:var(--red)">${fmtMoney(total - pago)}</strong>`;
+    `Previsto: <strong>${fmtMoney(totalPrevisto)}</strong> &nbsp;|&nbsp; ` +
+    `Pago: <strong style="color:var(--green)">${fmtMoney(totalPago)}</strong> &nbsp;|&nbsp; ` +
+    `Pendente: <strong style="color:var(--red)">${fmtMoney(totalPendente)}</strong>`;
 
   const list = document.getElementById('paymentList');
   list.innerHTML = mesItens.map(item => {
     const pg = mesPagamentos[item.id];
-    const isPago = pg?.pago;
+    const isPago = !!pg;
+    // Se está pago, mostrar valor pago; se previsto é 0, mostrar campo vazio para o usuário preencher
+    const valorCampo = item.valor > 0 ? item.valor : '';
     return `<div class="payment-item ${isPago ? 'paid' : ''}" id="pi_${item.id}">
       <div class="payment-check" onclick="togglePago('${item.id}')">${isPago ? '✓' : ''}</div>
       <div class="payment-info">
         <div class="payment-name">${item.nome}</div>
-        <div class="payment-due">Vencimento: dia ${item.venc}</div>
+        <div class="payment-due">${item.venc ? 'Vencimento: dia ' + item.venc : 'Conta adicional'}</div>
       </div>
       <div class="payment-val">
         ${isPago
-          ? `<div class="payment-paid">${fmtMoney(pg.valorPago)}</div><div class="payment-expected">${fmtMoney(item.valor)}</div>`
+          ? `<div class="payment-paid">${fmtMoney(pg.valorPago)}</div>
+             ${item.valor > 0 && pg.valorPago !== item.valor
+               ? `<div class="payment-expected">${fmtMoney(item.valor)}</div>`
+               : ''}`
           : `<div class="payment-input-wrap">
-              <input type="number" id="val_${item.id}" value="${item.valor}" step="0.01" style="width:110px;padding:6px 8px;font-size:13px">
+              <input type="number" id="val_${item.id}" value="${valorCampo}" step="0.01"
+                placeholder="R$ 0,00"
+                style="width:110px;padding:6px 8px;font-size:13px">
               <button class="btn btn-success btn-sm" onclick="marcarPago('${item.id}')">✓</button>
             </div>`
         }
@@ -1896,53 +1982,56 @@ function renderPaymentList(chave) {
 }
 
 function togglePago(id) {
-  if (mesPagamentos[id]?.pago) {
+  // Se já está pago, desmarcar
+  if (mesPagamentos[id]) {
     delete mesPagamentos[id];
   }
-  const now = new Date();
-  const chave = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  renderPaymentList(chave);
+  renderPaymentList();
 }
 
 function marcarPago(id) {
-  const val = parseFloat(document.getElementById('val_' + id).value) || 0;
-  mesPagamentos[id] = { pago: true, valorPago: val };
-  const now = new Date();
-  const chave = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  renderPaymentList(chave);
+  const inputEl = document.getElementById('val_' + id);
+  const val = parseFloat(inputEl?.value) || 0;
+  const item = mesItens.find(i => i.id === id);
+  mesPagamentos[id] = { valorPago: val, nome: item?.nome || id };
+  renderPaymentList();
 }
 
 function addExtraPayment() {
   const id = 'extra_' + Date.now();
-  mesItens.push({ id, nome: 'Nova conta', valor: 0, venc: 1, tipo: 'extra' });
-  const now = new Date();
-  renderPaymentList(`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`);
-  // Focus on last item name
-  setTimeout(() => {
-    const item = document.querySelector(`#pi_${id} .payment-name`);
-    if (item) { item.contentEditable = true; item.focus(); }
-  }, 100);
+  const nome = prompt('Nome da conta extra:', 'Conta extra');
+  if (!nome) return;
+  const valorStr = prompt('Valor pago (R$):', '0');
+  const valor = parseFloat(valorStr) || 0;
+  mesItens.push({ id, nome, valor, venc: 0, tipo: 'extra' });
+  mesPagamentos[id] = { valorPago: valor, nome };
+  renderPaymentList();
 }
 
 async function salvarPagamentos() {
-  const now = new Date();
-  const chave = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  dados.pagamentos = dados.pagamentos.filter(p => p.chave !== chave);
-
+  // Monta lista de todos os itens com seus valores finais
+  // pago → valorPago real; não marcado → não entra
   const itensPagos = [];
   for (const [itemId, pg] of Object.entries(mesPagamentos)) {
-    if (pg.pago) {
-      const item = mesItens.find(i => i.id === itemId);
-      const registro = { chave, itemId, nome: item?.nome || itemId, pago: true, valorPago: pg.valorPago };
-      dados.pagamentos.push(registro);
-      itensPagos.push(registro);
-    }
+    const item = mesItens.find(i => i.id === itemId);
+    const registro = {
+      chave:     mesChaveAtual,
+      itemId,
+      nome:      item?.nome || pg.nome || itemId,
+      valorPago: pg.valorPago,
+      pago:      true
+    };
+    itensPagos.push(registro);
   }
+
+  // Atualiza dados locais
+  dados.pagamentos = dados.pagamentos.filter(p => p.chave !== mesChaveAtual);
+  dados.pagamentos.push(...itensPagos);
 
   closeModal('modalMes');
   renderAll();
   mostrarLoadingApp(true);
-  await apiSalvarPagamentos(chave, itensPagos);
+  await apiSalvarPagamentos(mesChaveAtual, itensPagos);
   mostrarLoadingApp(false);
 }
 
