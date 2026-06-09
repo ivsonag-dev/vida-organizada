@@ -1939,33 +1939,50 @@ function abrirChecklist(mes, ano) {
   document.getElementById('modalMesTitulo').textContent =
     'Contas de ' + MESES[mes - 1] + ' ' + ano;
 
+  // 1. Itens previstos para o mês (contas vigentes)
   mesItens = getItensMes(mes, ano);
 
-  // Carregar pagamentos do mês salvos
+  // 2. Pagamentos já salvos para este mês
   mesPagamentos = {};
   const pagsSalvos = dados.pagamentos.filter(p => p.chave === mesChaveAtual);
 
   for (const p of pagsSalvos) {
-    // Tentar match exato por itemId
-    const itemExato = mesItens.find(i => i.id === p.itemId);
-    if (itemExato) {
-      mesPagamentos[itemExato.id] = { valorPago: p.valorPago, nome: p.nome };
-    } else {
-      // Fallback: reconciliar por nome (cobre registros salvos com id antigo)
-      const itemPorNome = mesItens.find(i =>
+    // Tentar encontrar o item correspondente por itemId exato
+    let item = mesItens.find(i => i.id === p.itemId);
+
+    // Fallback: reconciliar por nome (cobre registros salvos com id de sessão anterior)
+    if (!item) {
+      item = mesItens.find(i =>
         i.nome.toLowerCase().trim() === p.nome.toLowerCase().trim()
       );
-      if (itemPorNome) {
-        mesPagamentos[itemPorNome.id] = { valorPago: p.valorPago, nome: p.nome };
-      } else {
-        // Conta extra salva que não existe mais nos itens previstos — manter
-        mesPagamentos[p.itemId] = { valorPago: p.valorPago, nome: p.nome };
-        if (!mesItens.find(i => i.id === p.itemId)) {
-          mesItens.push({ id: p.itemId, nome: p.nome, valor: p.valorPago, venc: 0, tipo: 'extra' });
-        }
+    }
+
+    if (item) {
+      // Item previsto encontrado — marcar como pago usando o id atual do item
+      mesPagamentos[item.id] = { valorPago: p.valorPago, nome: item.nome };
+    } else {
+      // Item não está na lista de previstos (conta extra ou conta inativada depois)
+      // Garantir que ele APAREÇA no checklist como pago
+      const idExtra = p.itemId;
+      mesPagamentos[idExtra] = { valorPago: p.valorPago, nome: p.nome };
+      if (!mesItens.find(i => i.id === idExtra)) {
+        mesItens.push({
+          id:    idExtra,
+          nome:  p.nome,
+          valor: p.valorPago,
+          venc:  0,
+          tipo:  'extra'
+        });
       }
     }
   }
+
+  // 3. Ordenar: fixas/cartões/parceladas por vencimento, extras no final
+  mesItens.sort((a, b) => {
+    if (a.tipo === 'extra' && b.tipo !== 'extra') return 1;
+    if (a.tipo !== 'extra' && b.tipo === 'extra') return -1;
+    return (a.venc || 0) - (b.venc || 0);
+  });
 
   renderPaymentList();
   openModal('modalMes');
@@ -1981,39 +1998,71 @@ function renderPaymentList() {
     return s + (mesPagamentos[i.id] ? 0 : i.valor);
   }, 0);
 
+  const pagosCount   = mesItens.filter(i =>  mesPagamentos[i.id]).length;
+  const pendCount    = mesItens.filter(i => !mesPagamentos[i.id]).length;
+
   document.getElementById('mesResumo').innerHTML =
     `Previsto: <strong>${fmtMoney(totalPrevisto)}</strong> &nbsp;|&nbsp; ` +
-    `Pago: <strong style="color:var(--green)">${fmtMoney(totalPago)}</strong> &nbsp;|&nbsp; ` +
-    `Pendente: <strong style="color:var(--red)">${fmtMoney(totalPendente)}</strong>`;
+    `<span style="color:var(--green)">✓ Pago: <strong>${fmtMoney(totalPago)}</strong> (${pagosCount})</span>` +
+    ` &nbsp;|&nbsp; ` +
+    `<span style="color:var(--red)">○ Pendente: <strong>${fmtMoney(totalPendente)}</strong> (${pendCount})</span>`;
 
-  const list = document.getElementById('paymentList');
-  list.innerHTML = mesItens.map(item => {
-    const pg = mesPagamentos[item.id];
+  // Separar em dois grupos para exibição
+  const pendentes = mesItens.filter(i => !mesPagamentos[i.id]);
+  const pagos     = mesItens.filter(i =>  mesPagamentos[i.id]);
+
+  const renderItem = (item) => {
+    const pg     = mesPagamentos[item.id];
     const isPago = !!pg;
-    // Se está pago, mostrar valor pago; se previsto é 0, mostrar campo vazio para o usuário preencher
     const valorCampo = item.valor > 0 ? item.valor : '';
     return `<div class="payment-item ${isPago ? 'paid' : ''}" id="pi_${item.id}">
       <div class="payment-check" onclick="togglePago('${item.id}')">${isPago ? '✓' : ''}</div>
       <div class="payment-info">
         <div class="payment-name">${item.nome}</div>
-        <div class="payment-due">${item.venc ? 'Vencimento: dia ' + item.venc : 'Conta adicional'}</div>
+        <div class="payment-due">${item.venc ? 'Vencimento: dia ' + item.venc : '<span style="color:var(--text3);font-size:11px">Conta adicional</span>'}</div>
       </div>
       <div class="payment-val">
         ${isPago
           ? `<div class="payment-paid">${fmtMoney(pg.valorPago)}</div>
              ${item.valor > 0 && pg.valorPago !== item.valor
-               ? `<div class="payment-expected">${fmtMoney(item.valor)}</div>`
+               ? `<div class="payment-expected" title="Valor previsto">${fmtMoney(item.valor)}</div>`
                : ''}`
           : `<div class="payment-input-wrap">
-              <input type="number" id="val_${item.id}" value="${valorCampo}" step="0.01"
-                placeholder="R$ 0,00"
-                style="width:110px;padding:6px 8px;font-size:13px">
-              <button class="btn btn-success btn-sm" onclick="marcarPago('${item.id}')">✓</button>
-            </div>`
+               <input type="number" id="val_${item.id}" value="${valorCampo}"
+                 step="0.01" placeholder="0,00"
+                 style="width:110px;padding:6px 8px;font-size:13px">
+               <button class="btn btn-success btn-sm" onclick="marcarPago('${item.id}')">✓</button>
+             </div>`
         }
       </div>
     </div>`;
-  }).join('');
+  };
+
+  const list = document.getElementById('paymentList');
+
+  let html = '';
+
+  // Pendentes primeiro
+  if (pendentes.length > 0) {
+    html += `<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;font-weight:600">
+      ○ Pendentes (${pendentes.length})
+    </div>`;
+    html += pendentes.map(renderItem).join('');
+  }
+
+  // Pagos depois, com separador
+  if (pagos.length > 0) {
+    html += `<div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:1px;margin:16px 0 6px;font-weight:600;opacity:0.8">
+      ✓ Pagos (${pagos.length})
+    </div>`;
+    html += pagos.map(renderItem).join('');
+  }
+
+  if (html === '') {
+    html = `<div class="empty-state"><div class="empty-state-text">Nenhuma conta cadastrada</div></div>`;
+  }
+
+  list.innerHTML = html;
 }
 
 function togglePago(id) {
