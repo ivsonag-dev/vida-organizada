@@ -992,7 +992,7 @@ select option { background: var(--bg3); }
 // =============================================
 // CONFIGURAÇÃO — ALTERE AQUI
 // =============================================
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx2xOp9hnglgkyNxQ-CbuYblr6TNVu0skl9JHR3rILsZLJzH7oohG6bHFTn2Jay9je2/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwKsiMuJHqPXDjt8bNxs5h3e2Gddfs2V6zY_yd3p5LNBC8ZBUmBxBojRS_80FMKI-12/exec ';
 
 const USERS = {
   ivson:   { nome: 'Ivson',   pin: '1234', avatar: 'IV', cor: '#6c8dfa' },
@@ -1274,11 +1274,33 @@ function calcFinanceiro() {
   return { receita, fixo: fixoTotal, reservasVal, livre };
 }
 
-// Mapa itemId → {valorPago} dos pagamentos de um mês
+// Mapa itemId → {valorPago, nome} dos pagamentos de um mês
+// Reconcilia por nome quando o itemId antigo não bate com o atual
 function getPagamentosMes(chave) {
   const mapa = {};
-  for (const p of dados.pagamentos.filter(p => p.chave === chave)) {
-    mapa[p.itemId] = { valorPago: p.valorPago, nome: p.nome };
+  const pagsSalvos = dados.pagamentos.filter(p => p.chave === chave);
+  if (pagsSalvos.length === 0) return mapa;
+
+  const now = new Date();
+  const [ano, mes] = chave.split('-').map(Number);
+  const itens = getItensMes(mes, ano);
+
+  for (const p of pagsSalvos) {
+    // Match exato por itemId
+    if (itens.find(i => i.id === p.itemId)) {
+      mapa[p.itemId] = { valorPago: p.valorPago, nome: p.nome };
+    } else {
+      // Fallback por nome
+      const itemPorNome = itens.find(i =>
+        i.nome.toLowerCase().trim() === p.nome.toLowerCase().trim()
+      );
+      if (itemPorNome) {
+        mapa[itemPorNome.id] = { valorPago: p.valorPago, nome: p.nome };
+      } else {
+        // Extra (não previsto)
+        mapa[p.itemId] = { valorPago: p.valorPago, nome: p.nome };
+      }
+    }
   }
   return mapa;
 }
@@ -1919,16 +1941,29 @@ function abrirChecklist(mes, ano) {
 
   mesItens = getItensMes(mes, ano);
 
-  // Carregar o que já está pago de dados.pagamentos (persiste entre sessões)
+  // Carregar pagamentos do mês salvos
   mesPagamentos = {};
-  for (const p of dados.pagamentos.filter(p => p.chave === mesChaveAtual)) {
-    mesPagamentos[p.itemId] = { valorPago: p.valorPago, nome: p.nome };
-  }
+  const pagsSalvos = dados.pagamentos.filter(p => p.chave === mesChaveAtual);
 
-  // Adicionar ao mesItens as contas extras salvas que não são itens previstos
-  for (const p of dados.pagamentos.filter(p => p.chave === mesChaveAtual)) {
-    if (!mesItens.find(i => i.id === p.itemId)) {
-      mesItens.push({ id: p.itemId, nome: p.nome, valor: p.valorPago, venc: 0, tipo: 'extra' });
+  for (const p of pagsSalvos) {
+    // Tentar match exato por itemId
+    const itemExato = mesItens.find(i => i.id === p.itemId);
+    if (itemExato) {
+      mesPagamentos[itemExato.id] = { valorPago: p.valorPago, nome: p.nome };
+    } else {
+      // Fallback: reconciliar por nome (cobre registros salvos com id antigo)
+      const itemPorNome = mesItens.find(i =>
+        i.nome.toLowerCase().trim() === p.nome.toLowerCase().trim()
+      );
+      if (itemPorNome) {
+        mesPagamentos[itemPorNome.id] = { valorPago: p.valorPago, nome: p.nome };
+      } else {
+        // Conta extra salva que não existe mais nos itens previstos — manter
+        mesPagamentos[p.itemId] = { valorPago: p.valorPago, nome: p.nome };
+        if (!mesItens.find(i => i.id === p.itemId)) {
+          mesItens.push({ id: p.itemId, nome: p.nome, valor: p.valorPago, venc: 0, tipo: 'extra' });
+        }
+      }
     }
   }
 
@@ -2058,12 +2093,13 @@ function renderHistorico() {
   }
 
   el.innerHTML = `<table>
-    <thead><tr><th>Mês</th><th>Conta</th><th>Valor pago</th><th>Status</th></tr></thead>
+    <thead><tr><th>Mês</th><th>Conta</th><th>Valor pago</th><th>Data registro</th><th>Status</th></tr></thead>
     <tbody>
     ${pags.map(p => `<tr>
       <td>${formatChave(p.chave)}</td>
       <td>${p.nome}</td>
       <td style="color:var(--green);font-weight:600">${fmtMoney(p.valorPago)}</td>
+      <td style="color:var(--text3);font-size:12px">${fmtData(p.data)}</td>
       <td><span class="badge-ok paid-badge">Pago</span></td>
     </tr>`).join('')}
     </tbody>
@@ -2082,6 +2118,21 @@ function formatChave(chave) {
 // =============================================
 // UTILITÁRIOS
 // =============================================
+function fmtData(valor) {
+  if (!valor || valor === '') return '—';
+  // Aceita AAAA-MM-DD ou Date
+  try {
+    const s = String(valor);
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+      const [a, m, d] = s.split('-');
+      return `${d}/${m}/${a}`;
+    }
+    const d = new Date(valor);
+    if (!isNaN(d)) return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+  } catch(e) {}
+  return String(valor);
+}
+
 function fmtMoney(v) {
   return 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
