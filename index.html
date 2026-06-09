@@ -992,7 +992,7 @@ select option { background: var(--bg3); }
 // =============================================
 // CONFIGURAÇÃO — ALTERE AQUI
 // =============================================
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyGi-D2YQmtEfI0wLHSb_q60xICRQCmj_eQZaAHXeycCAzREfOrdY9djHqXnFeNbrmQ/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzjKKbFvX3BqOvE0vCFww-sxIameyT3d3Go2-za60wNnBlzNx9rEZI6L9KlgvKcKCWP/exec';
 
 const USERS = {
   ivson:   { nome: 'Ivson',   pin: '1234', avatar: 'IV', cor: '#6c8dfa' },
@@ -1939,45 +1939,56 @@ function abrirChecklist(mes, ano) {
   document.getElementById('modalMesTitulo').textContent =
     'Contas de ' + MESES[mes - 1] + ' ' + ano;
 
-  // 1. Itens previstos para o mês (contas vigentes)
+  // 1. Itens previstos para o mês
   mesItens = getItensMes(mes, ano);
-
-  // 2. Pagamentos já salvos para este mês
   mesPagamentos = {};
-  const pagsSalvos = dados.pagamentos.filter(p => p.chave === mesChaveAtual);
+
+  const pagsSalvos = dados.pagamentos.filter(p => String(p.chave) === mesChaveAtual);
+
+  // Debug: mostra no console o que chegou do Sheets
+  console.log('[Checklist] Mês:', mesChaveAtual);
+  console.log('[Checklist] Itens previstos:', mesItens.map(i => i.id + ' = ' + i.nome));
+  console.log('[Checklist] Pagamentos salvos:', pagsSalvos.map(p => p.itemId + ' = ' + p.nome + ' R$' + p.valorPago));
 
   for (const p of pagsSalvos) {
-    // Tentar encontrar o item correspondente por itemId exato
-    let item = mesItens.find(i => i.id === p.itemId);
+    const itemIdSalvo = String(p.itemId).trim();
+    const nomeSalvo   = String(p.nome).toLowerCase().trim();
 
-    // Fallback: reconciliar por nome (cobre registros salvos com id de sessão anterior)
+    // MATCH 1 — itemId exato (string)
+    let item = mesItens.find(i => String(i.id).trim() === itemIdSalvo);
+
+    // MATCH 2 — itemId contém o mesmo número final (cobre variações de prefixo)
     if (!item) {
-      item = mesItens.find(i =>
-        i.nome.toLowerCase().trim() === p.nome.toLowerCase().trim()
-      );
+      const numSalvo = itemIdSalvo.replace(/\D/g, '');
+      if (numSalvo.length > 8) {
+        item = mesItens.find(i => String(i.id).replace(/\D/g, '') === numSalvo);
+      }
+    }
+
+    // MATCH 3 — nome igual (case-insensitive, sem espaços extras)
+    if (!item) {
+      item = mesItens.find(i => i.nome.toLowerCase().trim() === nomeSalvo);
+    }
+
+    // MATCH 4 — nome contido (pagamento salvo com sufixo de parcela ex: "Financiamento (1/12)")
+    if (!item) {
+      item = mesItens.find(i => nomeSalvo.startsWith(i.nome.toLowerCase().trim()));
     }
 
     if (item) {
-      // Item previsto encontrado — marcar como pago usando o id atual do item
+      console.log('[Checklist] MATCH:', itemIdSalvo, '->', item.id, '(' + item.nome + ')');
       mesPagamentos[item.id] = { valorPago: p.valorPago, nome: item.nome };
     } else {
-      // Item não está na lista de previstos (conta extra ou conta inativada depois)
-      // Garantir que ele APAREÇA no checklist como pago
-      const idExtra = p.itemId;
-      mesPagamentos[idExtra] = { valorPago: p.valorPago, nome: p.nome };
-      if (!mesItens.find(i => i.id === idExtra)) {
-        mesItens.push({
-          id:    idExtra,
-          nome:  p.nome,
-          valor: p.valorPago,
-          venc:  0,
-          tipo:  'extra'
-        });
+      // Sem match — adicionar como item pago extra visível no checklist
+      console.log('[Checklist] SEM MATCH:', itemIdSalvo, '(' + p.nome + ') — adicionando como extra');
+      mesPagamentos[itemIdSalvo] = { valorPago: p.valorPago, nome: p.nome };
+      if (!mesItens.find(i => String(i.id) === itemIdSalvo)) {
+        mesItens.push({ id: itemIdSalvo, nome: p.nome, valor: p.valorPago, venc: 0, tipo: 'extra' });
       }
     }
   }
 
-  // 3. Ordenar: fixas/cartões/parceladas por vencimento, extras no final
+  // Ordenar: pendentes por vencimento, extras no final
   mesItens.sort((a, b) => {
     if (a.tipo === 'extra' && b.tipo !== 'extra') return 1;
     if (a.tipo !== 'extra' && b.tipo === 'extra') return -1;
