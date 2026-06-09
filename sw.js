@@ -3,7 +3,7 @@
 // Cache inteligente: app shell offline + sync quando online
 // ============================================================
 
-const CACHE_NAME = 'vida-organizada-v1.2';
+const CACHE_NAME = 'vida-organizada-v1.3';
 const APP_SHELL = [
   '/vida-organizada/',
   '/vida-organizada/index.html',
